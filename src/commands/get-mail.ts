@@ -4,6 +4,11 @@
 // See project-design.md §2.13.4 and refined spec §5.4.
 
 import type { CliConfig } from '../config/config';
+import {
+  buildExtendedPropertiesExpand,
+  ExtendedPropertyError,
+  parseExtendedPropertyIds,
+} from '../http/extended-properties';
 import type { OutlookClient } from '../http/outlook-client';
 import type { AttachmentSummary, Message, ODataListResponse } from '../http/types';
 import type { SessionFile } from '../session/schema';
@@ -23,6 +28,11 @@ export type BodyMode = 'html' | 'text' | 'none';
 
 export interface GetMailOptions {
   body?: BodyMode;
+  /**
+   * MAPI property ids to return under `SingleValueExtendedProperties`, e.g.
+   * `Binary 0x348A`. Repeatable; each value may be comma-separated.
+   */
+  extendedProperty?: string[];
 }
 
 const BODY_MODES: readonly BodyMode[] = ['html', 'text', 'none'];
@@ -43,6 +53,16 @@ export async function run(
     );
   }
 
+  let expand: string;
+  try {
+    expand = buildExtendedPropertiesExpand(parseExtendedPropertyIds(opts.extendedProperty));
+  } catch (err) {
+    if (err instanceof ExtendedPropertyError) {
+      throw new UsageError(`get-mail: ${err.message}`);
+    }
+    throw err;
+  }
+
   const session = await ensureSession(deps);
   const client = deps.createClient(session);
 
@@ -50,7 +70,10 @@ export async function run(
 
   try {
     const [message, attachments] = await Promise.all([
-      client.get<Message>(`/api/v2.0/me/messages/${encodedId}`),
+      client.get<Message>(
+        `/api/v2.0/me/messages/${encodedId}`,
+        expand.length > 0 ? { $expand: expand } : undefined,
+      ),
       client.get<ODataListResponse<AttachmentSummary>>(
         `/api/v2.0/me/messages/${encodedId}/attachments`,
         { $select: 'Id,Name,ContentType,Size,IsInline' },

@@ -46,6 +46,18 @@ export interface MessageSummary {
   WebLink: string;
   /** Present when `$select` includes `ConversationId` (used by get-thread). */
   ConversationId?: string;
+  /** Present only when requested with `--extended-property`. */
+  SingleValueExtendedProperties?: SingleValueExtendedProperty[];
+}
+
+/**
+ * One MAPI property returned by `$expand=SingleValueExtendedProperties(...)`.
+ * `Value` is always a string on the wire: base64 for Binary, decimal for the
+ * integer types, ISO-8601 for SystemTime.
+ */
+export interface SingleValueExtendedProperty {
+  PropertyId: string;
+  Value: string;
 }
 
 /**
@@ -203,6 +215,8 @@ export interface FolderSummary {
    * `list-folders` walk. Slash-separated, `/` and `\` escaped per §10.5.
    */
   Path?: string;
+  /** Present only when requested with `--extended-property`. */
+  SingleValueExtendedProperties?: SingleValueExtendedProperty[];
 }
 
 /** Request body for `POST /me/MailFolders/{parent}/childfolders`. */

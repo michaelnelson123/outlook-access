@@ -51,6 +51,11 @@ export interface ListMessagesInFolderOptions {
   orderBy?: string;
   /** `$filter` clause, e.g. `'ReceivedDateTime ge 2026-04-22T07:00:00Z'`. */
   filter?: string;
+  /**
+   * `$expand` clause, passed through verbatim. Built by
+   * `buildExtendedPropertiesExpand` for `--extended-property`.
+   */
+  expand?: string;
 }
 
 /** Options for `countMessagesInFolder`. */
@@ -205,8 +210,10 @@ export interface OutlookClient {
    *
    * @param parentId Parent folder id or well-known alias.
    * @param top      `$top` hint for the first page (default: DEFAULT_LIST_TOP).
+   * @param expand   Optional `$expand` clause, passed through verbatim (used
+   *                 for `--extended-property`).
    */
-  listFolders(parentId: string, top?: number): Promise<FolderSummary[]>;
+  listFolders(parentId: string, top?: number, expand?: string): Promise<FolderSummary[]>;
 
   /**
    * List calendar events via `GET /api/v2.0/me/calendarview`, following
@@ -607,13 +614,20 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
   // Public semantic methods (folder feature — §10.4)
   // -------------------------------------------------------------------------
 
-  async function listFolders(parentId: string, top?: number): Promise<FolderSummary[]> {
+  async function listFolders(
+    parentId: string,
+    top?: number,
+    expand?: string,
+  ): Promise<FolderSummary[]> {
     if (typeof parentId !== 'string' || parentId.length === 0) {
       throw new Error('outlook-client: listFolders requires a non-empty parentId');
     }
     const query: Record<string, string> = {};
     if (typeof top === 'number' && Number.isFinite(top) && top > 0) {
       query.$top = String(Math.floor(top));
+    }
+    if (typeof expand === 'string' && expand.length > 0) {
+      query.$expand = expand;
     }
 
     const path = `/api/v2.0/me/MailFolders/${encodeURIComponent(parentId)}/childfolders`;
@@ -749,6 +763,9 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
     }
     if (typeof opts.filter === 'string' && opts.filter.length > 0) {
       query.$filter = opts.filter;
+    }
+    if (typeof opts.expand === 'string' && opts.expand.length > 0) {
+      query.$expand = opts.expand;
     }
     return query;
   }

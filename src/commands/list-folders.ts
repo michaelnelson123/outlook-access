@@ -13,6 +13,11 @@ import type { CliConfig } from '../config/config';
 import { UpstreamError } from '../config/errors';
 import { parseFolderSpec, resolveFolder } from '../folders/resolver';
 import { DEFAULT_LIST_FOLDERS_TOP, MAX_FOLDERS_VISITED } from '../folders/types';
+import {
+  buildExtendedPropertiesExpand,
+  ExtendedPropertyError,
+  parseExtendedPropertyIds,
+} from '../http/extended-properties';
 import type { OutlookClient } from '../http/outlook-client';
 import type { FolderSummary } from '../http/types';
 import type { SessionFile } from '../session/schema';
@@ -58,6 +63,12 @@ export interface ListFoldersOptions {
    * raising `UsageError('FOLDER_AMBIGUOUS')`. Default: false.
    */
   firstMatch?: boolean;
+  /**
+   * MAPI property ids to return under `SingleValueExtendedProperties` on each
+   * folder, e.g. `Binary 0x0FFF` (the entry id). Repeatable; each value may
+   * be comma-separated.
+   */
+  extendedProperty?: string[];
 }
 
 /** Row shape emitted by `run()` — wire `FolderSummary` plus an always-populated
@@ -90,6 +101,15 @@ export async function run(
   const recursive = opts.recursive === true;
   const includeHidden = opts.includeHidden === true;
   const firstMatch = opts.firstMatch === true;
+  let expand: string;
+  try {
+    expand = buildExtendedPropertiesExpand(parseExtendedPropertyIds(opts.extendedProperty));
+  } catch (err) {
+    if (err instanceof ExtendedPropertyError) {
+      throw new UsageError(`list-folders: ${err.message}`);
+    }
+    throw err;
+  }
 
   // Resolve parent. The default (`MsgFolderRoot`) short-circuits without a
   // REST hop — `client.listFolders` accepts the alias verbatim in the URL
@@ -115,9 +135,9 @@ export async function run(
 
   try {
     if (!recursive) {
-      return await listDirectChildren(client, parentId, top, includeHidden);
+      return await listDirectChildren(client, parentId, top, includeHidden, expand);
     }
-    return await listRecursive(client, parentId, top, includeHidden);
+    return await listRecursive(client, parentId, top, includeHidden, expand);
   } catch (err) {
     throw mapHttpError(err);
   }
@@ -132,8 +152,9 @@ async function listDirectChildren(
   parentId: string,
   top: number,
   includeHidden: boolean,
+  expand: string,
 ): Promise<ListFoldersRow[]> {
-  const children = await client.listFolders(parentId, top);
+  const children = await client.listFolders(parentId, top, expand);
   const kept = includeHidden ? children : children.filter(isNotHidden);
   return kept.map((f) => ({
     ...f,
@@ -158,13 +179,14 @@ async function listRecursive(
   rootParentId: string,
   top: number,
   includeHidden: boolean,
+  expand: string,
 ): Promise<ListFoldersRow[]> {
   const out: ListFoldersRow[] = [];
   const queue: Frame[] = [{ id: rootParentId, path: '', depth: -1 }];
 
   while (queue.length > 0) {
     const frame = queue.shift() as Frame;
-    const children = await client.listFolders(frame.id, top);
+    const children = await client.listFolders(frame.id, top, expand);
     const kept = includeHidden ? children : children.filter(isNotHidden);
 
     for (const child of kept) {
