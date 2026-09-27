@@ -121,6 +121,21 @@ describe('captureSharepointFromContext', () => {
     ).rejects.toThrow(SharepointCaptureError);
   });
 
+  it('throws SHAREPOINT_INVALID_HOST for hosts that only contain sharepoint.com', async () => {
+    // CodeQL js/incomplete-url-substring-sanitization: a substring test accepted
+    // an attacker-registered host that merely contains the tenant domain.
+    const { context } = makeFakeEnv(null);
+    for (const host of [
+      'sharepoint.com.evil.example',
+      'evilsharepoint.com',
+      'contoso.sharepoint.com.attacker.net',
+    ]) {
+      await expect(
+        captureSharepointFromContext(context as any, host, 30_000),
+      ).rejects.toMatchObject({ code: 'SHAREPOINT_INVALID_HOST' });
+    }
+  });
+
   it('returns a cookie-only session when no Bearer arrives (cookie-auth tenant)', async () => {
     // MCAS-gated / cookie-auth tenants never emit a SharePoint Bearer. The
     // capture must succeed on cookies alone rather than time out.

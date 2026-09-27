@@ -14,9 +14,7 @@ import { decodeJwt } from './jwt';
 import type { SharepointSession } from '../session/sharepoint-schema';
 
 export type SharepointCaptureErrorCode =
-  | 'SHAREPOINT_TIMEOUT'
-  | 'SHAREPOINT_NO_TOKEN'
-  | 'SHAREPOINT_INVALID_HOST';
+  'SHAREPOINT_TIMEOUT' | 'SHAREPOINT_NO_TOKEN' | 'SHAREPOINT_INVALID_HOST';
 
 export class SharepointCaptureError extends Error {
   public readonly code: SharepointCaptureErrorCode;
@@ -32,7 +30,10 @@ export class SharepointCaptureError extends Error {
 const VALID_HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 
 function validateHost(host: string): void {
-  if (!VALID_HOST_RE.test(host) || !host.includes('sharepoint.com')) {
+  // A suffix test, not a substring test: a tenant host always ends in
+  // ".sharepoint.com", and includes() also accepted hosts such as
+  // "sharepoint.com.evil.example" (CodeQL js/incomplete-url-substring-sanitization).
+  if (!VALID_HOST_RE.test(host) || !host.toLowerCase().endsWith('.sharepoint.com')) {
     throw new SharepointCaptureError(
       'SHAREPOINT_INVALID_HOST',
       `Invalid SharePoint host "${host}" — expected something like "tenant.sharepoint.com"`,
