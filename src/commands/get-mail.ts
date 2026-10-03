@@ -70,9 +70,12 @@ export async function run(
 
   try {
     const [message, attachments] = await Promise.all([
+      // `--body text` asks the server for a plain-text body via the Prefer
+      // header; without it the stored HTML body comes back.
       client.get<Message>(
         `/api/v2.0/me/messages/${encodedId}`,
         expand.length > 0 ? { $expand: expand } : undefined,
+        body === 'text' ? { bodyContentType: 'text' } : undefined,
       ),
       client.get<ODataListResponse<AttachmentSummary>>(
         `/api/v2.0/me/messages/${encodedId}/attachments`,
@@ -85,9 +88,10 @@ export async function run(
       Attachments: Array.isArray(attachments.value) ? attachments.value : [],
     };
 
-    // Body handling. The client does not convert HTML→text (ADR deferral in
-    // project-design §2.13.4); we respect "none" explicitly and pass through
-    // the upstream Body otherwise.
+    // Body handling. The client does not convert HTML→text itself (ADR
+    // deferral in project-design §2.13.4); "text" is converted server-side
+    // via the Prefer header above, "none" is stripped here, and "html" is
+    // passed through.
     if (body === 'none') {
       delete merged.Body;
     }

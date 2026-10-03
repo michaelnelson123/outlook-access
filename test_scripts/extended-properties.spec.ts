@@ -203,7 +203,13 @@ describe('get-mail --extended-property', () => {
     );
     const deps = buildDeps({ get } as Partial<OutlookClient>);
     const msg = await runGetMail(deps, 'm1', { extendedProperty: [DELETED_FROM] });
-    expect(get).toHaveBeenCalledWith('/api/v2.0/me/messages/m1', { $expand: DELETED_FROM_EXPAND });
+    // Third argument is the RequestOptions slot; this fixture's config sets
+    // bodyMode 'text', so the plain-text Prefer header rides along.
+    expect(get).toHaveBeenCalledWith(
+      '/api/v2.0/me/messages/m1',
+      { $expand: DELETED_FROM_EXPAND },
+      { bodyContentType: 'text' },
+    );
     expect(msg.SingleValueExtendedProperties).toEqual([prop]);
   });
 
@@ -213,7 +219,9 @@ describe('get-mail --extended-property', () => {
     );
     const deps = buildDeps({ get } as Partial<OutlookClient>);
     await runGetMail(deps, 'm1');
-    expect(get).toHaveBeenCalledWith('/api/v2.0/me/messages/m1', undefined);
+    expect(get).toHaveBeenCalledWith('/api/v2.0/me/messages/m1', undefined, {
+      bodyContentType: 'text',
+    });
   });
 
   it('rejects a malformed id with UsageError before any HTTP', async () => {

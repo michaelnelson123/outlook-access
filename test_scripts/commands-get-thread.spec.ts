@@ -144,6 +144,39 @@ describe('get-thread', () => {
     expect(opts.select).not.toContain('BodyPreview');
   });
 
+  it('selects ToRecipients and CcRecipients for every message', async () => {
+    const { deps, client } = makeDeps();
+    (client.listMessagesByConversation as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
+    await run(deps, 'conv:CID', { body: 'none' });
+    const [, opts] = (client.listMessagesByConversation as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, { select?: string[] }];
+    expect(opts.select).toContain('ToRecipients');
+    expect(opts.select).toContain('CcRecipients');
+  });
+
+  it('--body text (the default) asks the client for plain-text bodies', async () => {
+    const { deps, client } = makeDeps();
+    (client.listMessagesByConversation as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
+    await run(deps, 'conv:CID');
+    const [, opts] = (client.listMessagesByConversation as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, { bodyContentType?: string }];
+    expect(opts.bodyContentType).toBe('text');
+  });
+
+  it('--body html and --body none do not ask for plain text', async () => {
+    const { deps, client } = makeDeps();
+    const list = client.listMessagesByConversation as ReturnType<typeof vi.fn>;
+    list.mockResolvedValue([]);
+    await run(deps, 'conv:CID', { body: 'html' });
+    await run(deps, 'conv:CID', { body: 'none' });
+    expect((list.mock.calls[0] as [string, { bodyContentType?: string }])[1].bodyContentType).toBe(
+      undefined,
+    );
+    expect((list.mock.calls[1] as [string, { bodyContentType?: string }])[1].bodyContentType).toBe(
+      undefined,
+    );
+  });
+
   it('throws UsageError on empty positional', async () => {
     const { deps } = makeDeps();
     await expect(run(deps, '')).rejects.toBeInstanceOf(UsageError);

@@ -32,7 +32,7 @@ If you can sign in to `outlook.office.com` in a browser, you can already reach t
 
 ## Commands
 
-Nineteen subcommands are wired up in `src/cli.ts`. Every command emits JSON on stdout by default and accepts `--table` for a compact human view. Errors are always emitted as JSON on stderr with a `code` field and a numeric exit code (see [Exit codes](#exit-codes)).
+Twenty-one subcommands are wired up in `src/cli.ts`. Every command emits JSON on stdout by default and accepts `--table` for a compact human view. Errors are always emitted as JSON on stderr with a `code` field and a numeric exit code (see [Exit codes](#exit-codes)).
 
 | Command                          | Purpose                                                                                                                                                                                                                                                                                                                            |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -40,7 +40,7 @@ Nineteen subcommands are wired up in `src/cli.ts`. Every command emits JSON on s
 | `auth-check`                     | Non-interactive verification that the cached session is still accepted.                                                                                                                                                                                                                                                            |
 | `auth-renew`                     | Silent (headless) bearer refresh using the persisted browser profile. `--sharepoint-host` also refreshes a SharePoint session.                                                                                                                                                                                                     |
 | `list-mail`                      | List messages from a folder. Supports `--folder` / `--folder-id` / `--folder-parent`, `--since` / `--until` or keyword-aware `--from` / `--to`, `--all` pagination with `--max` safety cap, `--select`, `--just-count` (server-side `$count=true`), and `--extended-property` (MAPI properties via `$expand`).                     |
-| `get-mail <id>`                  | Retrieve one message. `--body` accepts `html`, `text`, or `none`; `--extended-property` returns MAPI properties.                                                                                                                                                                                                                   |
+| `get-mail <id>`                  | Retrieve one message. `--body` accepts `html`, `text`, or `none` (`text` asks the server for a plain-text body); `--extended-property` returns MAPI properties.                                                                                                                                                                    |
 | `get-thread <id>`                | Retrieve every message in a conversation, across folders. Accepts `conv:<conversationId>` to skip the resolve hop. `--order` accepts `asc` or `desc`; `--body` as above.                                                                                                                                                           |
 | `download-attachments <id>`      | Save non-inline attachments to `--out <dir>`. `--include-inline`, `--overwrite`.                                                                                                                                                                                                                                                   |
 | `download-sharepoint-link <url>` | Fetch a `ReferenceAttachment.SourceUrl` (SharePoint / OneDrive for Business) using the captured SharePoint session.                                                                                                                                                                                                                |
@@ -50,6 +50,8 @@ Nineteen subcommands are wired up in `src/cli.ts`. Every command emits JSON on s
 | `find-folder <spec>`             | Resolve a folder query to a single `ResolvedFolder`. `--anchor`, `--first-match`.                                                                                                                                                                                                                                                  |
 | `create-folder <path>`           | Create (or idempotently reuse) a mail folder. `--parent`, `--create-parents`, `--idempotent`.                                                                                                                                                                                                                                      |
 | `move-mail <ids...>`             | Move one or more messages to `--to <spec>`. `--continue-on-error` collects failures instead of aborting. Per-message failures still set exit 5.                                                                                                                                                                                    |
+| `mark-mail <ids...>`             | Set read state or follow-up flag: exactly one of `--read`, `--unread`, `--flag`, `--unflag`, `--complete`. `--continue-on-error`, `--dry-run`. Ids are unchanged. Per-message failures still set exit 5.                                                                                                                           |
+| `delete-mail <ids...>`           | Soft delete: move to Deleted Items through `move-mail`'s path; returns new ids. No hard delete. `--continue-on-error`, `--dry-run`. Per-message failures still set exit 5.                                                                                                                                                         |
 | `send-mail`                      | Compose and send. Default: creates a draft and activates Outlook desktop (macOS only). `--send-now` dispatches immediately. `--to` / `--cc` / `--bcc`, `--subject`, `--html` / `--text`, `--attach` (repeatable, combined cap 30 MB), `--signature`, `--no-signature`, `--no-cc-self`, `--no-save-sent`, `--no-open`, `--dry-run`. |
 | `capture-signature`              | Extract a signature from a SentItems message and save to `~/.outlook-cli/signature.html`. `--from-message <id>`, `--out <file>`.                                                                                                                                                                                                   |
 | `reply <id>`                     | Reply to a message. Auto-quotes original, appends signature. Same draft-first / `--send-now` model as `send-mail`.                                                                                                                                                                                                                 |
@@ -166,7 +168,51 @@ outlook-cli list-mail --folder Inbox --just-count
 
 # Full thread across folders (or pass "conv:<id>" to skip the resolve hop)
 outlook-cli get-thread AAMkAGI... --order asc
+
+# Mark read / unread, or set the follow-up flag (exactly one action per run)
+outlook-cli mark-mail AAMk... AAMk... --read
+outlook-cli mark-mail AAMk... --flag
+outlook-cli mark-mail AAMk... --complete --continue-on-error
+outlook-cli mark-mail AAMk... --unread --dry-run   # prints the PATCH, sends nothing
+
+# Soft delete: move to Deleted Items (recoverable; there is no hard delete)
+outlook-cli delete-mail AAMk... AAMk... --continue-on-error
+outlook-cli delete-mail AAMk... --dry-run
 ```
+
+`get-thread` returns every message in the conversation: it follows `@odata.nextLink` page by page (the server's default page of 10 used to cut long threads short, dropping the newest messages) and sorts by `ReceivedDateTime` on the client. Each message carries `From`, `ToRecipients` and `CcRecipients`. `--body text` on `get-thread` and `get-mail` sends `Prefer: outlook.body-content-type="text"`, so `Body.ContentType` comes back as `Text`; `--body html` returns the stored body unchanged.
+
+`mark-mail` PATCHes `/me/messages/{id}` with `{"IsRead": true|false}` (`--read` / `--unread`) or `{"Flag": {"FlagStatus": "Flagged"|"NotFlagged"|"Complete"}}` (`--flag` / `--unflag` / `--complete`). Zero or several action flags is a usage error (exit 2). Output:
+
+```json
+{
+  "mode": "applied",
+  "action": "read",
+  "patch": { "IsRead": true },
+  "marked": [{ "id": "AAMk..." }],
+  "failed": [
+    {
+      "id": "AAMk...",
+      "error": { "code": "UPSTREAM_HTTP_404", "httpStatus": 404, "message": "..." }
+    }
+  ],
+  "summary": { "requested": 2, "marked": 1, "failed": 1 }
+}
+```
+
+`delete-mail` is `move-mail --to DeletedItems` with `moved` renamed to `deleted`. A move re-keys the message, so each entry carries the `newId` it has in Deleted Items:
+
+```json
+{
+  "mode": "deleted",
+  "destination": { "Id": "AAMk...", "Path": "Deleted Items", "DisplayName": "Deleted Items" },
+  "deleted": [{ "sourceId": "AAMk...", "newId": "AAMk..." }],
+  "failed": [],
+  "summary": { "requested": 1, "deleted": 1, "failed": 0 }
+}
+```
+
+Both commands run one request per id, sequentially. Without `--continue-on-error` the first failure aborts the run (exit 5, or 4 for auth). With it, failures are collected in `failed[]`, the JSON is printed, and the exit code is still 5. `--dry-run` validates the arguments and prints the same shape with `"mode": "dry-run"` without loading the session or contacting M365; `delete-mail`'s dry run reports `"destination": null` and entries without `newId`.
 
 `--since` / `--until` add a server-side `$filter` on `ReceivedDateTime`. The newer `--from` / `--to` accept the same ISO-8601 plus keywords (`now`, `now+7d`, `now-24h`). `--all` walks `@odata.nextLink` until exhausted. `--max <N>` is the safety cap (default 10000, max 100000). When the cap is hit and more results remain, a `max_results_reached` warning is emitted on stderr and the partial result is returned.
 
@@ -333,15 +379,15 @@ Nothing in `~/.outlook-cli/` is ever printed or logged. Body-snippet redaction (
 
 ### Exit codes
 
-| Code | Meaning                                                                                                   |
-| ---- | --------------------------------------------------------------------------------------------------------- |
-| `0`  | Success                                                                                                   |
-| `1`  | Unexpected error                                                                                          |
-| `2`  | Invalid usage (bad argv, commander error)                                                                 |
-| `3`  | Configuration error (malformed flag or env var)                                                           |
-| `4`  | Auth failure (expired or rejected session, user cancelled login, `--no-auto-reauth` with no cache)        |
-| `5`  | Upstream API error (non-401 HTTP error, timeout, network failure, pagination limit, partial move failure) |
-| `6`  | IO error (folder collision without `--idempotent`, file collision without `--overwrite`)                  |
+| Code | Meaning                                                                                                                   |
+| ---- | ------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success                                                                                                                   |
+| `1`  | Unexpected error                                                                                                          |
+| `2`  | Invalid usage (bad argv, commander error)                                                                                 |
+| `3`  | Configuration error (malformed flag or env var)                                                                           |
+| `4`  | Auth failure (expired or rejected session, user cancelled login, `--no-auto-reauth` with no cache)                        |
+| `5`  | Upstream API error (non-401 HTTP error, timeout, network failure, pagination limit, partial move, mark or delete failure) |
+| `6`  | IO error (folder collision without `--idempotent`, file collision without `--overwrite`)                                  |
 
 ## Architecture
 
@@ -366,7 +412,7 @@ src/
   folders/
     resolver.ts             Well-known alias / path / id:<raw> resolution
     types.ts                ResolvedFolder, CreateFolderResult, MoveMailResult
-  commands/                 One file per subcommand (17 files; reply.ts handles reply, reply-all, forward)
+  commands/                 One file per subcommand (19 files; reply.ts handles reply, reply-all, forward)
   config/
     config.ts               loadConfig with flag > env > default precedence
     errors.ts               ConfigurationError, AuthError, IoError, ...

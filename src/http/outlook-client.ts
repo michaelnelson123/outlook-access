@@ -41,6 +41,21 @@ import type {
 /** Value types accepted in the `query` parameter bag. */
 export type QueryValue = string | number;
 
+/**
+ * Per-request options that change request headers rather than the URL.
+ *
+ * `bodyContentType: 'text'` sends `Prefer: outlook.body-content-type="text"`,
+ * which makes the server return `Body` as plain text (ContentType "Text")
+ * instead of HTML. Anything else sends no Prefer header, so the server's
+ * default (HTML for HTML mail) applies.
+ */
+export interface RequestOptions {
+  bodyContentType?: 'html' | 'text';
+}
+
+/** The Prefer header value that asks Outlook REST for plain-text bodies. */
+export const PREFER_TEXT_BODY = 'outlook.body-content-type="text"';
+
 /** Options for `listMessagesInFolder`. Mirrors the list-mail select/order API. */
 export interface ListMessagesInFolderOptions {
   /** `$top` — 1..1000; when omitted the server default applies. */
@@ -78,12 +93,18 @@ export interface CountMessagesResult {
 
 /** Options for `listMessagesByConversation`. */
 export interface ListMessagesByConversationOptions {
-  /** `$top` — 1..1000; when omitted the server default applies. */
+  /**
+   * Cap on the number of messages returned. Sent as `$top` and enforced
+   * client-side across pages. When omitted every page is collected (page
+   * size `DEFAULT_LIST_TOP`) by following `@odata.nextLink`.
+   */
   top?: number;
   /** `$select` field names. Serialised as a comma-joined OData `$select`. */
   select?: string[];
   /** `$orderby` clause. Default: `'ReceivedDateTime asc'` (oldest-first thread). */
   orderBy?: string;
+  /** `'text'` asks the server for plain-text bodies (see `RequestOptions`). */
+  bodyContentType?: 'html' | 'text';
 }
 
 /** Result envelope for the auto-paginating `listMessagesInFolderAll`. */
@@ -161,13 +182,22 @@ export interface CreateReplyResult {
   CcRecipients?: { EmailAddress: SendEmailAddress }[];
 }
 
-/** PATCH-able subset of a draft message. All fields optional. */
+/** Follow-up flag states accepted by Outlook REST v2.0. */
+export type FlagStatus = 'NotFlagged' | 'Flagged' | 'Complete';
+
+/**
+ * PATCH-able subset of a message. All fields optional. Subject, Body and
+ * the recipient lists apply to drafts (reply/forward); IsRead and Flag apply
+ * to any message (`mark-mail`).
+ */
 export interface UpdateMessagePatch {
   Subject?: string;
   Body?: SendBody;
   ToRecipients?: { EmailAddress: SendEmailAddress }[];
   CcRecipients?: { EmailAddress: SendEmailAddress }[];
   BccRecipients?: { EmailAddress: SendEmailAddress }[];
+  IsRead?: boolean;
+  Flag?: { FlagStatus: FlagStatus };
 }
 
 /** Single message returned by getMessage (subset of fields we use). */
@@ -195,8 +225,9 @@ export interface OutlookClient {
    * @param path  Path starting with '/', e.g. '/api/v2.0/me/messages'.
    * @param query Optional query parameters. OData `$` keys are passed through
    *              verbatim; all values are URL-encoded.
+   * @param reqOpts Optional header-level options (e.g. plain-text bodies).
    */
-  get<T>(path: string, query?: Record<string, QueryValue>): Promise<T>;
+  get<T>(path: string, query?: Record<string, QueryValue>, reqOpts?: RequestOptions): Promise<T>;
 
   /**
    * List direct children of a mail folder via
@@ -308,6 +339,12 @@ export interface OutlookClient {
    * `GET /api/v2.0/me/messages?$filter=ConversationId eq '{id}'`. The caller
    * is responsible for providing the conversation id (usually extracted from
    * any single message's `ConversationId` field).
+   *
+   * Pages are collected through the internal `listAll<T>` generator, so
+   * `@odata.nextLink` is followed (same host guard and page cap as
+   * `listFolders`). Without this the server's default page of 10 silently
+   * truncated long threads. Sorting is client-side: `$orderby` together
+   * with the ConversationId filter is rejected as InefficientFilter.
    */
   listMessagesByConversation(
     conversationId: string,
@@ -345,8 +382,9 @@ export interface OutlookClient {
   getMessage(messageId: string, opts?: GetMessageOptions): Promise<GetMessageResult>;
 
   /**
-   * PATCH a draft message (subject / body / recipients). Used by reply/forward
-   * after `createReply` etc returns the auto-quoted draft.
+   * PATCH a message via `PATCH /api/v2.0/me/messages/{id}`. Used by
+   * reply/forward to edit the auto-quoted draft (subject / body /
+   * recipients), and by `mark-mail` to set `IsRead` or `Flag` on any message.
    */
   updateMessage(messageId: string, patch: UpdateMessagePatch): Promise<GetMessageResult>;
 
@@ -468,6 +506,7 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
     method: 'GET' | 'POST' | 'PATCH',
     urlOrPath: string,
     body?: unknown,
+    reqOpts?: RequestOptions,
   ): Promise<T> {
     const url = urlOrPath.startsWith('http')
       ? urlOrPath
@@ -478,7 +517,7 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
           return `${BASE_URL}${urlOrPath}`;
         })();
 
-    const firstResp = await executeFetch(method, url, body, session, opts.httpTimeoutMs);
+    const firstResp = await executeFetch(method, url, body, session, opts.httpTimeoutMs, reqOpts);
 
     if (firstResp.status === 401) {
       if (opts.noAutoReauth) {
@@ -492,7 +531,7 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
       const refreshed = await opts.onReauthNeeded();
       session = refreshed;
 
-      const retryResp = await executeFetch(method, url, body, session, opts.httpTimeoutMs);
+      const retryResp = await executeFetch(method, url, body, session, opts.httpTimeoutMs, reqOpts);
       if (retryResp.status === 401) {
         await throwForResponse(retryResp, url, /*authReason*/ 'AFTER_RETRY');
       }
@@ -502,12 +541,16 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
     return await handleSuccessOrThrow<T>(firstResp, url);
   }
 
-  async function doGet<T>(path: string, query?: Record<string, QueryValue>): Promise<T> {
+  async function doGet<T>(
+    path: string,
+    query?: Record<string, QueryValue>,
+    reqOpts?: RequestOptions,
+  ): Promise<T> {
     if (!path.startsWith('/')) {
       throw new Error(`outlook-client: path must start with '/': ${path}`);
     }
     const url = buildUrl(path, query);
-    return doRequest<T>('GET', url);
+    return doRequest<T>('GET', url, undefined, reqOpts);
   }
 
   /**
@@ -537,7 +580,8 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
 
   /**
    * Private generic `listAll<T>` — follows `@odata.nextLink` verbatim up to
-   * `maxPages` pages (default `MAX_FOLDER_PAGES`). Yields individual items as they are decoded.
+   * `opts.maxPages` pages (default `MAX_FOLDER_PAGES`). Yields individual items as
+   * they are decoded. `opts.reqOpts` rides each page's GET (e.g. body-content-type).
    *
    * Enforces two safety rails:
    *   1. Off-host guard: any `@odata.nextLink` whose hostname is not
@@ -552,8 +596,9 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
   async function* listAll<T>(
     path: string,
     query?: Record<string, string>,
-    maxPages: number = MAX_FOLDER_PAGES,
+    opts: { maxPages?: number; reqOpts?: RequestOptions } = {},
   ): AsyncGenerator<T> {
+    const { maxPages = MAX_FOLDER_PAGES, reqOpts } = opts;
     if (!path.startsWith('/')) {
       throw new Error(`outlook-client: path must start with '/': ${path}`);
     }
@@ -597,7 +642,12 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
         });
       }
 
-      const page: ODataListResponse<T> = await doRequest<ODataListResponse<T>>('GET', url);
+      const page: ODataListResponse<T> = await doRequest<ODataListResponse<T>>(
+        'GET',
+        url,
+        undefined,
+        reqOpts,
+      );
       const items = Array.isArray(page.value) ? page.value : [];
       for (const item of items) {
         yield item;
@@ -656,11 +706,9 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
   async function listCalendarView(query: Record<string, string>): Promise<EventSummary[]> {
     const collected: EventSummary[] = [];
     try {
-      for await (const item of listAll<EventSummary>(
-        '/api/v2.0/me/calendarview',
-        query,
-        MAX_CALENDAR_PAGES,
-      )) {
+      for await (const item of listAll<EventSummary>('/api/v2.0/me/calendarview', query, {
+        maxPages: MAX_CALENDAR_PAGES,
+      })) {
         collected.push(item);
       }
     } catch (err) {
@@ -899,18 +947,29 @@ export function createOutlookClient(opts: CreateClientOptions): OutlookClient {
     // ReceivedDateTime. Send the request WITHOUT $orderby and sort client-side
     // (fork-only fix; upstream BikS2013/outlook-tool@cca2f50 ships the broken
     // version that errors against live mailboxes).
-    const query: Record<string, QueryValue> = {
+    const query: Record<string, string> = {
       $filter: `ConversationId eq '${escaped}'`,
     };
+    // An explicit top is both the page size and a cap on what is returned.
+    // Without one, listAll's DEFAULT_LIST_TOP page size applies and every
+    // page is collected.
+    let cap = Number.POSITIVE_INFINITY;
     if (typeof opts.top === 'number' && Number.isFinite(opts.top) && opts.top > 0) {
-      query.$top = String(Math.floor(opts.top));
+      cap = Math.floor(opts.top);
+      query.$top = String(cap);
     }
     if (Array.isArray(opts.select) && opts.select.length > 0) {
       query.$select = opts.select.join(',');
     }
+    const reqOpts: RequestOptions = { bodyContentType: opts.bodyContentType };
     try {
-      const resp = await doGet<ODataListResponse<MessageSummary>>('/api/v2.0/me/messages', query);
-      const messages = Array.isArray(resp.value) ? resp.value : [];
+      const messages: MessageSummary[] = [];
+      for await (const item of listAll<MessageSummary>('/api/v2.0/me/messages', query, {
+        reqOpts,
+      })) {
+        messages.push(item);
+        if (messages.length >= cap) break;
+      }
       // Client-side sort. Default ReceivedDateTime asc; honor "desc" if
       // requested. Other orderBy expressions fall back to default.
       const orderBy =
@@ -1176,7 +1235,11 @@ function buildUrl(path: string, query: Record<string, QueryValue> | undefined): 
 // Header / cookie construction
 // ---------------------------------------------------------------------------
 
-function buildHeaders(s: SessionFile, method: 'GET' | 'POST' | 'PATCH'): Record<string, string> {
+function buildHeaders(
+  s: SessionFile,
+  method: 'GET' | 'POST' | 'PATCH',
+  reqOpts?: RequestOptions,
+): Record<string, string> {
   const rawToken = s.bearer.token ?? '';
   const authValue = rawToken.startsWith('Bearer ') ? rawToken : `Bearer ${rawToken}`;
 
@@ -1189,6 +1252,12 @@ function buildHeaders(s: SessionFile, method: 'GET' | 'POST' | 'PATCH'): Record<
   // Only body-bearing methods set Content-Type.
   if (method === 'POST' || method === 'PATCH') {
     headers['Content-Type'] = 'application/json';
+  }
+
+  // Plain-text bodies are a server-side conversion requested by header; a
+  // `$select=Body` alone always returns the stored (usually HTML) body.
+  if (reqOpts?.bodyContentType === 'text') {
+    headers.Prefer = PREFER_TEXT_BODY;
   }
 
   const cookieHeader = serializeCookieJar(s.cookies ?? []);
@@ -1246,8 +1315,9 @@ async function executeFetch(
   body: unknown,
   s: SessionFile,
   timeoutMs: number,
+  reqOpts?: RequestOptions,
 ): Promise<Response> {
-  const headers = buildHeaders(s, method);
+  const headers = buildHeaders(s, method, reqOpts);
 
   // Serialise the body for body-bearing methods (POST, PATCH). GET
   // never carries a body.

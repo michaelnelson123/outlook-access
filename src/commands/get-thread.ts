@@ -41,6 +41,8 @@ const THREAD_BASE_SELECT = [
   'Id',
   'Subject',
   'From',
+  'ToRecipients',
+  'CcRecipients',
   'ReceivedDateTime',
   'HasAttachments',
   'IsRead',
@@ -128,6 +130,9 @@ export async function run(
     const messages = await client.listMessagesByConversation(conversationId, {
       select,
       orderBy: `ReceivedDateTime ${order}`,
+      // `--body text` is a server-side conversion requested by a Prefer
+      // header; without it the stored HTML body comes back.
+      ...(body === 'text' ? { bodyContentType: 'text' as const } : {}),
     });
     return {
       conversationId,

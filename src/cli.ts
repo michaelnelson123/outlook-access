@@ -44,6 +44,8 @@ import { LIST_FOLDERS_COLUMNS } from './commands/list-folders';
 import * as findFolder from './commands/find-folder';
 import * as createFolder from './commands/create-folder';
 import * as moveMail from './commands/move-mail';
+import * as markMail from './commands/mark-mail';
+import * as deleteMail from './commands/delete-mail';
 import * as sendMail from './commands/send-mail';
 import * as captureSignature from './commands/capture-signature';
 import * as reply from './commands/reply';
@@ -339,7 +341,7 @@ const CREATE_FOLDER_COLUMNS: ColumnSpec<CreateFolderSegment>[] = [
 interface MoveMailRow {
   sourceId: string;
   newId?: string;
-  status: 'moved' | 'failed';
+  status: 'moved' | 'deleted' | 'would delete' | 'failed';
   error?: string;
 }
 
@@ -384,6 +386,63 @@ function toMoveMailRows(r: MoveMailResult): MoveMailRow[] {
     });
   }
   return rows;
+}
+
+/** `mark-mail` table rows: one per requested id. Columns: `Id | Status | Error`. */
+interface MarkMailRow {
+  id: string;
+  status: string;
+  error?: string;
+}
+
+const MARK_MAIL_COLUMNS: ColumnSpec<MarkMailRow>[] = [
+  {
+    header: 'Id',
+    extract: (r) => r.id ?? '',
+    // No maxWidth: message ids must stay intact.
+  },
+  {
+    header: 'Status',
+    extract: (r) => r.status ?? '',
+  },
+  {
+    header: 'Error',
+    extract: (r) => r.error ?? '',
+    maxWidth: 48,
+  },
+];
+
+function formatFailure(e: { code?: string; httpStatus?: number; message?: string }): string {
+  const parts: string[] = [];
+  if (e?.code) parts.push(e.code);
+  if (typeof e?.httpStatus === 'number') parts.push(`HTTP ${e.httpStatus}`);
+  if (e?.message) parts.push(e.message);
+  return parts.join(' — ');
+}
+
+function toMarkMailRows(r: markMail.MarkMailResult): MarkMailRow[] {
+  const ok = r.mode === 'dry-run' ? `would ${r.action}` : r.action;
+  return [
+    ...r.marked.map((m) => ({ id: m.id, status: ok })),
+    ...r.failed.map((f) => ({ id: f.id, status: 'failed', error: formatFailure(f.error) })),
+  ];
+}
+
+/** `delete-mail` reuses the move-mail table (`Source Id | New Id | Status | Error`). */
+function toDeleteMailRows(r: deleteMail.DeleteMailResult): MoveMailRow[] {
+  const ok = r.mode === 'dry-run' ? 'would delete' : 'deleted';
+  return [
+    ...r.deleted.map((d) => ({
+      sourceId: d.sourceId,
+      newId: 'newId' in d ? d.newId : undefined,
+      status: ok as MoveMailRow['status'],
+    })),
+    ...r.failed.map((f) => ({
+      sourceId: f.sourceId,
+      status: 'failed' as const,
+      error: formatFailure(f.error),
+    })),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +1027,83 @@ export async function main(argv: string[]): Promise<number> {
           process.exitCode = 5;
         }
       }),
+    );
+
+  // -------- mark-mail <messageIds...> --------
+  program
+    .command('mark-mail')
+    .argument('<messageIds...>', 'One or more message ids to mark')
+    .description(
+      'Set read state or follow-up flag on messages. Exactly one of ' +
+        '--read | --unread | --flag | --unflag | --complete.',
+    )
+    .option('--read', 'Mark as read (IsRead: true)', false)
+    .option('--unread', 'Mark as unread (IsRead: false)', false)
+    .option('--flag', 'Flag for follow-up (FlagStatus: Flagged)', false)
+    .option('--unflag', 'Clear the flag (FlagStatus: NotFlagged)', false)
+    .option('--complete', 'Mark the flag complete (FlagStatus: Complete)', false)
+    .option(
+      '--continue-on-error',
+      'Collect per-message failures into failed[] instead of aborting',
+      false,
+    )
+    .option('--dry-run', 'Print the planned PATCH without contacting M365', false)
+    .action(
+      makeAction<markMail.MarkMailOptions, [string[]]>(
+        program,
+        async (deps, g, cmdOpts, messageIds) => {
+          const result = await markMail.run(deps, messageIds, cmdOpts);
+          const mode = resolveOutputMode(g);
+          if (mode === 'table') {
+            emitResult(
+              toMarkMailRows(result),
+              mode,
+              MARK_MAIL_COLUMNS as unknown as ColumnSpec<unknown>[],
+            );
+          } else {
+            emitResult(result, mode);
+          }
+          // Same partial-failure rule as move-mail: payload first, then exit 5.
+          if (result.failed.length > 0) {
+            process.exitCode = 5;
+          }
+        },
+      ),
+    );
+
+  // -------- delete-mail <messageIds...> --------
+  program
+    .command('delete-mail')
+    .argument('<messageIds...>', 'One or more message ids to delete')
+    .description(
+      'Soft-delete messages: move them to Deleted Items (returns new ids). No hard delete.',
+    )
+    .option(
+      '--continue-on-error',
+      'Collect per-message failures into failed[] instead of aborting',
+      false,
+    )
+    .option('--dry-run', 'Print the planned move without contacting M365', false)
+    .action(
+      makeAction<deleteMail.DeleteMailOptions, [string[]]>(
+        program,
+        async (deps, g, cmdOpts, messageIds) => {
+          const result = await deleteMail.run(deps, messageIds, cmdOpts);
+          const mode = resolveOutputMode(g);
+          if (mode === 'table') {
+            emitResult(
+              toDeleteMailRows(result),
+              mode,
+              MOVE_MAIL_COLUMNS as unknown as ColumnSpec<unknown>[],
+            );
+          } else {
+            emitResult(result, mode);
+          }
+          if (result.failed.length > 0) {
+            process.exitCode = 5;
+          }
+        },
+      ),
     );
 
   // -------- send-mail --------

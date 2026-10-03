@@ -216,6 +216,217 @@ describe('listMessagesByConversation', () => {
   });
 });
 
+describe('listMessagesByConversation — paging (server default page of 10 truncated threads)', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function newClient() {
+    return createOutlookClient({
+      session: buildFakeSession(),
+      httpTimeoutMs: 5000,
+      noAutoReauth: false,
+      onReauthNeeded: async () => buildFakeSession(),
+    });
+  }
+
+  it('follows @odata.nextLink, stitches both pages and sorts the union client-side', async () => {
+    const nextLink =
+      "https://outlook.office.com/api/v2.0/me/messages?$filter=ConversationId+eq+'CID'&$top=250&$skip=250";
+    // Newest message deliberately on page 2, as the server returned it live.
+    fetchMock
+      .mockResolvedValueOnce(
+        makeResponse({
+          status: 200,
+          body: {
+            value: [
+              makeMessage('p1-b', '2026-03-02T10:00:00Z'),
+              makeMessage('p1-a', '2026-03-01T10:00:00Z'),
+            ],
+            '@odata.nextLink': nextLink,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeResponse({
+          status: 200,
+          body: {
+            value: [
+              makeMessage('p2-newest', '2026-03-09T10:00:00Z'),
+              makeMessage('p2-oldest', '2026-02-01T10:00:00Z'),
+            ],
+          },
+        }),
+      );
+
+    const result = await newClient().listMessagesByConversation('CID');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.map((m) => m.Id)).toEqual(['p2-oldest', 'p1-a', 'p1-b', 'p2-newest']);
+
+    const first = decodeURIComponent(
+      (fetchMock.mock.calls[0] as [string, unknown])[0].replace(/\+/g, '%20'),
+    );
+    // Without an explicit top the listAll page size applies, not the server's 10.
+    expect(first).toContain('$top=250');
+    expect(first).not.toContain('$orderby');
+    // The nextLink is followed verbatim.
+    expect((fetchMock.mock.calls[1] as [string, unknown])[0]).toBe(nextLink);
+  });
+
+  it('honours an explicit top: sent as $top and caps the result across pages', async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeResponse({
+        status: 200,
+        body: {
+          value: [
+            makeMessage('a', '2026-03-01T10:00:00Z'),
+            makeMessage('b', '2026-03-02T10:00:00Z'),
+          ],
+          '@odata.nextLink': 'https://outlook.office.com/api/v2.0/me/messages?$skip=2',
+        },
+      }),
+    );
+
+    const result = await newClient().listMessagesByConversation('CID', { top: 2 });
+
+    // Cap reached on page 1, so the nextLink is not fetched.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.map((m) => m.Id)).toEqual(['a', 'b']);
+    const decoded = decodeURIComponent(
+      (fetchMock.mock.calls[0] as [string, unknown])[0].replace(/\+/g, '%20'),
+    );
+    expect(decoded).toContain('$top=2');
+  });
+
+  it('refuses an off-host @odata.nextLink with UPSTREAM_PAGINATION_LIMIT', async () => {
+    fetchMock.mockResolvedValueOnce(
+      makeResponse({
+        status: 200,
+        body: {
+          value: [makeMessage('a', '2026-03-01T10:00:00Z')],
+          '@odata.nextLink': 'https://evil.example.com/api/v2.0/me/messages?$skip=1',
+        },
+      }),
+    );
+
+    await expect(newClient().listMessagesByConversation('CID')).rejects.toMatchObject({
+      code: 'UPSTREAM_PAGINATION_LIMIT',
+    });
+    // The off-host URL is never fetched.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Prefer: outlook.body-content-type="text"', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function newClient() {
+    return createOutlookClient({
+      session: buildFakeSession(),
+      httpTimeoutMs: 5000,
+      noAutoReauth: false,
+      onReauthNeeded: async () => buildFakeSession(),
+    });
+  }
+
+  function headersOf(call: number): Record<string, string> {
+    return (fetchMock.mock.calls[call] as [string, RequestInit])[1].headers as Record<
+      string,
+      string
+    >;
+  }
+
+  it('get() sends the Prefer header when bodyContentType is text', async () => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ status: 200, body: { Id: 'm1' } }));
+    await newClient().get('/api/v2.0/me/messages/m1', undefined, { bodyContentType: 'text' });
+    expect(headersOf(0).Prefer).toBe('outlook.body-content-type="text"');
+  });
+
+  it('get() sends no Prefer header by default or for html', async () => {
+    fetchMock
+      .mockResolvedValueOnce(makeResponse({ status: 200, body: { Id: 'm1' } }))
+      .mockResolvedValueOnce(makeResponse({ status: 200, body: { Id: 'm1' } }));
+    const client = newClient();
+    await client.get('/api/v2.0/me/messages/m1');
+    await client.get('/api/v2.0/me/messages/m1', undefined, { bodyContentType: 'html' });
+    expect(headersOf(0).Prefer).toBeUndefined();
+    expect(headersOf(1).Prefer).toBeUndefined();
+  });
+
+  it('listMessagesByConversation sends the Prefer header on every page for text', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        makeResponse({
+          status: 200,
+          body: {
+            value: [makeMessage('a', '2026-03-01T10:00:00Z')],
+            '@odata.nextLink': 'https://outlook.office.com/api/v2.0/me/messages?$skip=1',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeResponse({ status: 200, body: { value: [makeMessage('b', '2026-03-02T10:00:00Z')] } }),
+      );
+    await newClient().listMessagesByConversation('CID', { bodyContentType: 'text' });
+    expect(headersOf(0).Prefer).toBe('outlook.body-content-type="text"');
+    expect(headersOf(1).Prefer).toBe('outlook.body-content-type="text"');
+  });
+
+  it('listMessagesByConversation sends no Prefer header without bodyContentType', async () => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ status: 200, body: { value: [] } }));
+    await newClient().listMessagesByConversation('CID');
+    expect(headersOf(0).Prefer).toBeUndefined();
+  });
+});
+
+describe('updateMessage — IsRead / Flag PATCH bodies (mark-mail)', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    [{ IsRead: true }],
+    [{ IsRead: false }],
+    [{ Flag: { FlagStatus: 'Flagged' as const } }],
+    [{ Flag: { FlagStatus: 'NotFlagged' as const } }],
+    [{ Flag: { FlagStatus: 'Complete' as const } }],
+  ])('PATCHes /me/messages/{id} with %j', async (patch) => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ status: 200, body: { Id: 'm1' } }));
+    const client = createOutlookClient({
+      session: buildFakeSession(),
+      httpTimeoutMs: 5000,
+      noAutoReauth: false,
+      onReauthNeeded: async () => buildFakeSession(),
+    });
+    await client.updateMessage('m1', patch);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://outlook.office.com/api/v2.0/me/messages/m1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual(patch);
+  });
+});
+
 describe('countMessagesInFolder', () => {
   const fetchMock = vi.fn();
 

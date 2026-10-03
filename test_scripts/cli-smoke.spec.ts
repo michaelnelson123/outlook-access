@@ -67,6 +67,52 @@ describe('cli smoke tests', () => {
     expect(out).toContain('find-folder');
     expect(out).toContain('create-folder');
     expect(out).toContain('move-mail');
+    expect(out).toContain('mark-mail');
+    expect(out).toContain('delete-mail');
+  });
+
+  it('(1c) mark-mail --help exposes the five actions, --continue-on-error and --dry-run', () => {
+    const r = runCli(['mark-mail', '--help'], { env: clearedConfigEnv() });
+    expect(r.status).toBe(0);
+    for (const flag of [
+      '--read',
+      '--unread',
+      '--flag',
+      '--unflag',
+      '--complete',
+      '--continue-on-error',
+      '--dry-run',
+    ]) {
+      expect(r.stdout).toContain(flag);
+    }
+  });
+
+  it('(1d) mark-mail with two actions exits 2 with BAD_USAGE before any session load', () => {
+    const home = makeTempHome();
+    try {
+      const r = runCli(['--no-auto-reauth', 'mark-mail', 'id-1', '--read', '--flag'], {
+        env: { ...clearedConfigEnv(), HOME: home, OUTLOOK_CLI_SESSION_FILE: '' },
+      });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('"BAD_USAGE"');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('(1e) delete-mail --dry-run prints the plan and exits 0 with no session', () => {
+    const home = makeTempHome();
+    try {
+      const r = runCli(['--no-auto-reauth', 'delete-mail', 'id-1', 'id-2', '--dry-run'], {
+        env: { ...clearedConfigEnv(), HOME: home, OUTLOOK_CLI_SESSION_FILE: '' },
+      });
+      expect(r.status).toBe(0);
+      const out = JSON.parse(r.stdout) as { mode: string; summary: { requested: number } };
+      expect(out.mode).toBe('dry-run');
+      expect(out.summary.requested).toBe(2);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('(1a) list-folders --help exposes the --parent, --recursive, --first-match flags', () => {

@@ -24,6 +24,42 @@ Fork-only features (not in upstream):
   (PidTagLastActiveParentFid) on a Deleted Items message, matched against a
   folder's `Binary 0x0FFF` entry id, names the folder it was deleted from.
   See `docs/design/plan-003-extended-properties.md`.
+- **`mark-mail <ids...>`** — exactly one of `--read`, `--unread`, `--flag`,
+  `--unflag`, `--complete`. PATCHes `/me/messages/{id}` with
+  `{"IsRead": true|false}` or `{"Flag": {"FlagStatus": "Flagged"|"NotFlagged"|"Complete"}}`
+  through `OutlookClient.updateMessage`, whose `UpdateMessagePatch` now
+  admits `IsRead` and `Flag`. Output lists `marked[]` (ids are unchanged by
+  a PATCH), `failed[]` and a `summary`. Zero or several actions is exit 2.
+- **`delete-mail <ids...>`** — soft delete only: a move to the
+  `DeletedItems` alias through move-mail's own path, so the message is
+  recoverable and each entry reports the `newId` it has in Deleted Items.
+  No hard delete.
+- Both verbs follow move-mail's conventions: sequential, first failure
+  aborts (exit 5, or 4 for auth) unless `--continue-on-error`, which
+  collects failures in `failed[]` and still exits 5. Both take `--dry-run`
+  like send-mail and reply, which validates and prints the plan without
+  loading the session or contacting M365.
+- **`ToRecipients` and `CcRecipients` on `get-thread`** messages.
+
+### Fixed
+
+- **`get-thread` truncated threads longer than 10 messages.**
+  `listMessagesByConversation` made one request with no `$top` and ignored
+  `@odata.nextLink`, so the server's default page of 10 came back and the
+  rest, typically the newest messages, were silently missing. It now
+  collects through `listAll` (page size `DEFAULT_LIST_TOP` = 250, nextLink
+  followed with the outlook.office.com host guard and the 50-page cap). The
+  client-side `ReceivedDateTime` sort is kept (`$orderby` with the
+  ConversationId filter is InefficientFilter). An explicit `top` is still
+  sent as `$top` and now also caps the total returned.
+- **`--body text` returned HTML.** On `get-thread` and `get-mail` it was a
+  label only; nothing asked the server to convert. It now sends
+  `Prefer: outlook.body-content-type="text"`, so `Body.ContentType` is
+  `Text`. `html` and `none` send no Prefer header. The header rides a new
+  optional `RequestOptions` argument on `OutlookClient.get` and every
+  `listAll` page.
+
+---
 
 ## [1.5.0] — 2026-04-22 (fork)
 
