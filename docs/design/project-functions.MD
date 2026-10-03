@@ -50,7 +50,8 @@ ordered by `ReceivedDateTime desc`.
 `Inbox/Projects/Alpha`), `--folder-id <id>` (mutually exclusive with `--folder`; skips
 the resolver and calls `/me/MailFolders/{id}/messages` directly), `--folder-parent
 <name-or-path-or-id>` (default `MsgFolderRoot`; anchor for non-well-known `--folder`
-values), `--select <comma-list>` (override selected fields).
+values), `--select <comma-list>` (override selected fields), `--extended-property <id>`
+(repeatable; see FF-008).
 **REST target.** `GET /api/v2.0/me/MailFolders/<folder-or-id>/messages?$top=N&$orderby=ReceivedDateTime desc&$select=...`.
 **Outputs (JSON).** Array of message summaries (default fields: `Id`, `Subject`, `From`,
 `ReceivedDateTime`, `HasAttachments`, `IsRead`, `WebLink`).
@@ -66,7 +67,8 @@ values), `--select <comma-list>` (override selected fields).
 **Purpose.** Retrieve the full resource for a specific message, plus a computed
 `Attachments[]` metadata summary.
 
-**Inputs.** `<id>` positional (required), `--body <html|text|none>` (default `text`).
+**Inputs.** `<id>` positional (required), `--body <html|text|none>` (default `text`),
+`--extended-property <id>` (repeatable; see FF-008).
 **REST targets.** `GET /api/v2.0/me/messages/{id}` and
 `GET /api/v2.0/me/messages/{id}/attachments` (metadata only).
 **Outputs (JSON).** Full message resource augmented with
@@ -134,7 +136,8 @@ or the full sub-tree when `--recursive` is set. Part of the folder-management ex
 **Inputs.** `--parent <name-or-path-or-id>` (default `MsgFolderRoot`; accepts well-known
 alias, display-name path, or `id:AAMkAGI...`), `--recursive` (default `false`),
 `--include-hidden` (default `false`), `--top <N>` (default `100`, range `1..250` —
-`$top` hint per `/childfolders` page; actual paging handled by the HTTP layer).
+`$top` hint per `/childfolders` page; actual paging handled by the HTTP layer),
+`--extended-property <id>` (repeatable; see FF-008).
 **REST targets.** `GET /api/v2.0/me/MailFolders?$top=N&$select=...` for the root level;
 `GET /api/v2.0/me/MailFolders/{parentId}/childfolders?$top=N&$select=...` for children.
 Pagination follows `@odata.nextLink` up to a 50-page cap per collection; whole-tree
@@ -307,3 +310,18 @@ bounded at `5000` visited nodes. Off-host `nextLink` (any hostname other than
 `outlook.office.com`) is rejected as `UpstreamError UPSTREAM_PAGINATION_OFF_HOST`.
 The 401-retry-once envelope applies transparently per page. Source:
 outlook-v2-folder-pagination-filter §5 + §6.
+
+### FF-008 — Extended (MAPI) properties
+
+`get-mail`, `list-mail` and `list-folders` accept `--extended-property <id>`
+(repeatable, comma-separated ok) and return the requested single-value MAPI
+properties under `SingleValueExtendedProperties: [{ PropertyId, Value }]`, via
+`$expand=SingleValueExtendedProperties($filter=PropertyId eq '<id>' or ...)`.
+Accepted ids: `<Type> 0x<4 hex>` (tagged), `<Type> {guid} Id 0x<hex>` and
+`<Type> {guid} Name <name>` (named). A malformed id is `UsageError` exit 2 before
+any HTTP call; the validation regex admits no quote, so ids cannot break out of
+the OData literal. Motivating use: `Binary 0x348A` (PidTagLastActiveParentFid)
+on a Deleted Items message, matched against folders' `Binary 0x0FFF` entry ids,
+names the folder the message was deleted from. Outlook echoes `PropertyId`
+lower-cased. Absent flag → no `$expand`, identical behaviour to before. Source:
+plan-003-extended-properties.

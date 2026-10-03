@@ -2868,6 +2868,35 @@ folder feature scope.
 
 ---
 
+## 11. Extended (MAPI) properties
+
+Specified in `plan-003-extended-properties.md`; registered as FF-008.
+
+- **Module.** `src/http/extended-properties.ts` — `parseExtendedPropertyIds`
+  (split on commas, trim, collapse whitespace, validate against the v2.0
+  `PropertyId` grammar, de-duplicate) and `buildExtendedPropertiesExpand`
+  (`SingleValueExtendedProperties($filter=PropertyId eq 'A' or ...)`, or `''`).
+  Throws `ExtendedPropertyError`; each command maps it to `UsageError` (exit 2)
+  with its own prefix, as list-mail does for `FilterError`.
+- **Client.** `ListMessagesInFolderOptions.expand?` → `$expand` in
+  `buildMessagesQuery` (covers the single-page and `--all` paths).
+  `listFolders(parentId, top?, expand?)`. `get-mail` uses the generic
+  `get<T>(path, { $expand })`.
+- **Types.** `SingleValueExtendedProperty { PropertyId; Value }`;
+  optional `SingleValueExtendedProperties` on `MessageSummary` and
+  `FolderSummary`.
+- **CLI.** `--extended-property <id>` on get-mail, list-mail, list-folders,
+  parsed by `collectRepeatable`.
+- **ADR-17: repeatable single-value flag, not variadic.** A variadic
+  `<id...>` option would consume `get-mail`'s positional `<id>`. The
+  repeat-or-comma form matches the recipients flags' ergonomics without that
+  hazard.
+- **ADR-18: validate, never escape.** The id grammar excludes `'`, so a
+  validated id is always safe inside the quoted OData literal; rejecting is
+  simpler and stricter than escaping.
+
+---
+
 ## Summary
 
 - Full, contract-grade TypeScript design spanning 14 base modules + 6 folder-feature

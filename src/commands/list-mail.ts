@@ -7,6 +7,11 @@ import type { CliConfig } from '../config/config';
 import { AuthError as CliAuthError, OutlookCliError, UpstreamError } from '../config/errors';
 import type { OutlookClient } from '../http/outlook-client';
 import { ApiError, AuthError as HttpAuthError, NetworkError } from '../http/errors';
+import {
+  buildExtendedPropertiesExpand,
+  ExtendedPropertyError,
+  parseExtendedPropertyIds,
+} from '../http/extended-properties';
 import { buildReceivedDateFilter, FilterError } from '../http/filter-builder';
 import type { MessageSummary } from '../http/types';
 import type { SessionFile } from '../session/schema';
@@ -54,6 +59,12 @@ export interface ListMailOptions {
    * `--select`. Works alongside every folder flag and the date window.
    */
   justCount?: boolean;
+  /**
+   * MAPI property ids to return under `SingleValueExtendedProperties` on each
+   * message, e.g. `Binary 0x348A`. Repeatable; each value may be
+   * comma-separated. Ignored with `--just-count`, like `--select`.
+   */
+  extendedProperty?: string[];
 }
 
 /** Result shape returned by `run()` when `justCount` is true. */
@@ -176,6 +187,16 @@ export async function run( // NOSONAR S3776 - mail listing with complex filters
   const select =
     typeof opts.select === 'string' && opts.select.length > 0 ? opts.select : DEFAULT_SELECT;
 
+  let expand: string;
+  try {
+    expand = buildExtendedPropertiesExpand(parseExtendedPropertyIds(opts.extendedProperty));
+  } catch (err) {
+    if (err instanceof ExtendedPropertyError) {
+      throw new UsageError(`list-mail: ${err.message}`);
+    }
+    throw err;
+  }
+
   // Session load. If missing/expired and auto-reauth is allowed, capture a
   // fresh session before we build the client.
   const session = await ensureSession(deps);
@@ -190,6 +211,7 @@ export async function run( // NOSONAR S3776 - mail listing with complex filters
     select: selectArr,
     orderBy: 'ReceivedDateTime desc',
     filter: filter.length > 0 ? filter : undefined,
+    expand: expand.length > 0 ? expand : undefined,
   };
 
   // Resolve the target folderId via one of three paths.

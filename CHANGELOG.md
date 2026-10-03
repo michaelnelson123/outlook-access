@@ -12,6 +12,19 @@ Fork-only features (not in upstream):
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`--extended-property <id>`** on `get-mail`, `list-mail` and
+  `list-folders` — return single-value MAPI properties under
+  `SingleValueExtendedProperties` via `$expand`. Repeatable, comma-separated
+  ok; tagged (`Binary 0x348A`) and named (`String {guid} Name X`) forms;
+  malformed ids exit 2 before any request. Example: `Binary 0x348A`
+  (PidTagLastActiveParentFid) on a Deleted Items message, matched against a
+  folder's `Binary 0x0FFF` entry id, names the folder it was deleted from.
+  See `docs/design/plan-003-extended-properties.md`.
+
 ## [1.5.0] — 2026-04-22 (fork)
 
 Phase B3: complete signature handling across send-mail / reply / forward,

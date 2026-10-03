@@ -665,6 +665,11 @@ export async function main(argv: string[]): Promise<number> {
       'Return only {count, exact} via server-side $count=true. Ignores --top/--select. Mutually exclusive with --all.',
       false,
     )
+    .option(
+      '--extended-property <id>',
+      'MAPI property to return under SingleValueExtendedProperties, e.g. "Binary 0x348A" (repeatable; comma-separated ok)',
+      collectRepeatable,
+    )
     .action(
       makeAction<
         {
@@ -680,6 +685,7 @@ export async function main(argv: string[]): Promise<number> {
           all?: boolean;
           max?: number;
           justCount?: boolean;
+          extendedProperty?: string[];
         },
         []
       >(program, async (deps, g, cmdOpts) => {
@@ -701,11 +707,19 @@ export async function main(argv: string[]): Promise<number> {
     .argument('<id>', 'Message id')
     .description('Retrieve one message with optional body')
     .option('--body <mode>', 'Body inclusion: html|text|none')
+    .option(
+      '--extended-property <id>',
+      'MAPI property to return under SingleValueExtendedProperties, e.g. "Binary 0x348A" (repeatable; comma-separated ok)',
+      collectRepeatable,
+    )
     .action(
-      makeAction<{ body?: BodyMode }, [string]>(program, async (deps, g, cmdOpts, id) => {
-        const result = await getMail.run(deps, id, cmdOpts);
-        emitResult(result, resolveOutputMode(g));
-      }),
+      makeAction<{ body?: BodyMode; extendedProperty?: string[] }, [string]>(
+        program,
+        async (deps, g, cmdOpts, id) => {
+          const result = await getMail.run(deps, id, cmdOpts);
+          emitResult(result, resolveOutputMode(g));
+        },
+      ),
     );
 
   // -------- get-thread <id> --------
@@ -823,6 +837,11 @@ export async function main(argv: string[]): Promise<number> {
       'On ambiguity, pick the oldest candidate (CreatedDateTime asc, Id asc)',
       false,
     )
+    .option(
+      '--extended-property <id>',
+      'MAPI property to return under SingleValueExtendedProperties, e.g. "Binary 0x348A" (repeatable; comma-separated ok)',
+      collectRepeatable,
+    )
     .action(
       makeAction<
         {
@@ -831,6 +850,7 @@ export async function main(argv: string[]): Promise<number> {
           recursive?: boolean;
           includeHidden?: boolean;
           firstMatch?: boolean;
+          extendedProperty?: string[];
         },
         []
       >(program, async (deps, g, cmdOpts) => {
@@ -1162,6 +1182,14 @@ export async function main(argv: string[]): Promise<number> {
   } catch (err) {
     return reportError(err);
   }
+}
+
+/**
+ * commander option parser for repeatable string flags like
+ * `--extended-property`: each occurrence appends to the list.
+ */
+function collectRepeatable(v: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), v];
 }
 
 /**
